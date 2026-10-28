@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>IPTV Player</title>
+<style>
+*{-webkit-box-sizing:border-box;box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#0e1116;color:#e8eaed;font-family:Arial,Helvetica,sans-serif;font-size:15px}
+.app{display:-webkit-box;display:-webkit-flex;display:flex;height:100%;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.side{width:320px;max-width:42%;display:-webkit-box;display:-webkit-flex;display:flex;-webkit-box-orient:vertical;-webkit-flex-direction:column;flex-direction:column;background:#161b22;border-right:1px solid #262c36}
+.side h1{font-size:17px;margin:0;padding:14px 14px 8px}
+.tools{padding:0 14px 10px}
+.tools input[type=text]{width:100%;padding:9px 10px;border:1px solid #2d3542;border-radius:6px;background:#0e1116;color:#e8eaed;margin-bottom:6px}
+.btn{display:inline-block;padding:8px 12px;border:0;border-radius:6px;background:#2f6feb;color:#fff;cursor:pointer;font-size:13px;margin:0 6px 6px 0}
+.btn.alt{background:#2d3542}
+.btn:hover{opacity:.9}
+#list{-webkit-box-flex:1;-webkit-flex:1;flex:1;overflow-y:auto;margin:0;padding:0;list-style:none}
+#list li{padding:10px 14px;border-bottom:1px solid #1f252e;cursor:pointer;display:-webkit-box;display:-webkit-flex;display:flex;-webkit-box-align:center;-webkit-align-items:center;align-items:center}
+#list li:hover{background:#1d2430}
+#list li.on{background:#22407a}
+#list .n{width:28px;color:#7d8794;font-size:12px}
+#list .t{-webkit-box-flex:1;-webkit-flex:1;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#list .g{font-size:11px;color:#8b95a3;margin-left:8px}
+.main{-webkit-box-flex:1;-webkit-flex:1;flex:1;min-width:0;display:-webkit-box;display:-webkit-flex;display:flex;-webkit-box-orient:vertical;-webkit-flex-direction:column;flex-direction:column;padding:14px}
+.screen{position:relative;-webkit-box-flex:1;-webkit-flex:1;flex:1;min-height:0;background:#000;border-radius:8px;overflow:hidden}
+video{width:100%;height:100%;background:#000;display:block}
+#status{position:absolute;left:12px;top:12px;padding:5px 10px;border-radius:5px;background:rgba(0,0,0,.65);font-size:13px}
+.bar{padding-top:10px}
+#now{font-size:17px;font-weight:bold;margin-bottom:4px}
+.hint{font-size:12px;color:#8b95a3;line-height:1.5}
+textarea{display:none;width:100%;height:90px;margin-bottom:6px;background:#0e1116;color:#e8eaed;border:1px solid #2d3542;border-radius:6px;padding:8px}
+@media (max-width:700px){.app{-webkit-flex-direction:column-reverse;flex-direction:column-reverse}.side{width:100%;max-width:none;height:45%;border-right:0;border-top:1px solid #262c36}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="side">
+    <h1>IPTV Player</h1>
+    <div class="tools">
+      <input type="text" id="search" placeholder="Поиск канала…">
+      <input type="text" id="url" placeholder="Ссылка на .m3u / .m3u8">
+      <button class="btn" id="loadUrl">Загрузить</button>
+      <button class="btn alt" id="pasteBtn">Вставить M3U</button>
+      <label class="btn alt" for="file">Файл…</label>
+      <input type="file" id="file" accept=".m3u,.m3u8,.txt" style="display:none">
+      <textarea id="paste" placeholder="Вставьте содержимое M3U-плейлиста"></textarea>
+      <button class="btn" id="applyPaste" style="display:none">Применить</button>
+    </div>
+    <ul id="list"></ul>
+  </div>
+  <div class="main">
+    <div class="screen">
+      <video id="v" controls autoplay></video>
+      <div id="status">Вставьте ссылку на плейлист</div>
+    </div>
+    <div class="bar">
+      <div id="now">—</div>
+      <div class="hint">Клавиши: ↑ ↓ — смена канала, Enter — пауза/пуск, F — во весь экран, M — звук. ES5, работает в старых Chrome (от ~38). HLS идёт через hls.js 0.14.17, а потоки и плейлисты — через локальный прокси server.js.</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/0.14.17/hls.min.js"></script>
+<script>
+(function () {
+  var channels = [], shown = [], cur = -1, hls = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var v = $('v'), list = $('list'), statusEl = $('status');
+
+  function setStatus(t) { statusEl.textContent = t; statusEl.style.display = t ? 'block' : 'none'; }
+
+  function parseM3U(text) {
+    var lines = text.split(/\r?\n/), out = [], name = null, group = '', i, l, m, g;
+    for (i = 0; i < lines.length; i++) {
+      l = lines[i].replace(/^\s+|\s+$/g, '');
+      if (l.indexOf('#EXTINF') === 0) {
+        m = l.match(/,([^,]*)$/); name = m ? m[1] : '';
+        g = l.match(/group-title="([^"]*)"/); group = g ? g[1] : '';
+      } else if (l && l.charAt(0) !== '#') {
+        out.push({ name: name || l, group: group, url: l });
+        name = null; group = '';
+      }
+    }
+    return out;
+  }
+
+  function render() {
+    var q = $('search').value.toLowerCase(), i, li, a, b, c, k;
+    list.innerHTML = '';
+    shown = [];
+    for (i = 0; i < channels.length; i++) {
+      if (!q || channels[i].name.toLowerCase().indexOf(q) !== -1) shown.push(channels[i]);
+    }
+    for (i = 0; i < shown.length; i++) {
+      (function (idx) {
+        li = document.createElement('li');
+        a = document.createElement('span'); a.className = 'n'; a.textContent = idx + 1;
+        b = document.createElement('span'); b.className = 't'; b.textContent = shown[idx].name;
+        li.appendChild(a); li.appendChild(b);
+        if (shown[idx].group) { c = document.createElement('span'); c.className = 'g'; c.textContent = shown[idx].group; li.appendChild(c); }
+        if (shown[idx] === channels[cur]) li.className = 'on';
+        li.onclick = function () { play(shown[idx]); };
+        list.appendChild(li);
+      })(i);
+    }
+    if (!shown.length) { li = document.createElement('li'); li.textContent = channels.length ? 'Ничего не найдено' : 'Вставьте ссылку на M3U-плейлист'; list.appendChild(li); }
+  }
+
+  function stop() {
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+  }
+
+  function play(ch) {
+    var i;
+    for (i = 0; i < channels.length; i++) if (channels[i] === ch) cur = i;
+    $('now').textContent = ch.name;
+    setStatus('Загрузка…');
+    stop();
+    var src = proxyOn ? '/proxy?u=' + encodeURIComponent(ch.url) : ch.url;
+    var isHls = !/\.(ts|mp4|mkv|flv|mp3|aac|webm)(\?|$)/i.test(ch.url);
+    if (isHls && window.Hls && Hls.isSupported()) {
+      hls = new Hls();
+      hls.on(Hls.Events.MANIFEST_PARSED, function () { var p = v.play(); if (p && p.catch) p.catch(function () {}); });
+      hls.on(Hls.Events.ERROR, function (e, d) {
+        if (d && d.fatal) {
+          if (d.type === Hls.ErrorTypes.NETWORK_ERROR) { setStatus('Ошибка сети, повтор…'); hls.startLoad(); }
+          else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); }
+          else { stop(); v.src = src; var p2 = v.play(); if (p2 && p2.catch) { p2.catch(function () {}); } }
+        }
+      });
+      hls.loadSource(src);
+      hls.attachMedia(v);
+    } else {
+      v.src = src;
+      var p = v.play(); if (p && p.catch) p.catch(function () {});
+    }
+    render();
+    var on = list.querySelector('.on');
+    if (on && on.scrollIntoView) { var t = on.offsetTop - list.clientHeight / 2; list.scrollTop = t > 0 ? t : 0; }
+  }
+
+  function step(d) {
+    if (!shown.length) return;
+    var i = 0, k;
+    for (k = 0; k < shown.length; k++) if (shown[k] === channels[cur]) i = k + d;
+    if (cur === -1) i = 0;
+    if (i < 0) i = shown.length - 1;
+    if (i >= shown.length) i = 0;
+    play(shown[i]);
+  }
+
+  function fullscreen() {
+    var el = v.parentNode;
+    var f = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitRequestFullScreen || el.mozRequestFullScreen;
+    var inFs = document.fullscreenElement || document.webkitFullscreenElement || document.webkitIsFullScreen;
+    if (inFs) { (document.exitFullscreen || document.webkitExitFullscreen || document.webkitCancelFullScreen).call(document); }
+    else if (f) { f.call(el); }
+  }
+
+  function setChannels(arr) {
+    if (!arr.length) { alert('В плейлисте нет каналов'); return; }
+    channels = arr; cur = -1; render(); play(channels[0]);
+  }
+
+  v.addEventListener('playing', function () { setStatus(''); }, false);
+  v.addEventListener('waiting', function () { setStatus('Буферизация…'); }, false);
+  v.addEventListener('error', function () { if (v.src) setStatus('Ошибка воспроизведения'); }, false);
+
+  $('search').oninput = render;
+
+  var proxyOn = false;
+  function fetchText(u, cb) {
+    var x = new XMLHttpRequest();
+    x.open('GET', proxyOn ? '/proxy?raw=1&u=' + encodeURIComponent(u) : u, true);
+    x.onload = function () { if (x.status >= 200 && x.status < 300) { cb(x.responseText); } else { setStatus('Ошибка загрузки плейлиста: ' + x.status); } };
+    x.onerror = function () { setStatus(proxyOn ? 'Сервер не смог получить плейлист' : 'Не удалось загрузить (CORS). Запустите server.js'); };
+    x.send();
+  }
+  $('loadUrl').onclick = function () {
+    var u = $('url').value.replace(/^\s+|\s+$/g, '');
+    if (!u) return;
+    setStatus('Загрузка плейлиста…');
+    fetchText(u, function (t) {
+      if (t.indexOf('#EXT-X-STREAM-INF') !== -1 || t.indexOf('#EXT-X-TARGETDURATION') !== -1) { setChannels([{ name: u, group: '', url: u }]); }
+      else { setChannels(parseM3U(t)); }
+    });
+  };
+  $('url').onkeydown = function (e) { if (e.keyCode === 13) { $('loadUrl').onclick(); } };
+  try {
+    var px = new XMLHttpRequest();
+    px.open('GET', '/proxy?ping=1', true);
+    px.onload = function () { if (px.status === 200 && px.responseText === 'ok') { proxyOn = true; setStatus('Прокси включён'); } };
+    px.onerror = function () {};
+    px.send();
+  } catch (e) {}
+
+  $('pasteBtn').onclick = function () {
+    var t = $('paste'), b = $('applyPaste'), open = t.style.display === 'block';
+    t.style.display = open ? 'none' : 'block';
+    b.style.display = open ? 'none' : 'inline-block';
+  };
+  $('applyPaste').onclick = function () { setChannels(parseM3U($('paste').value)); };
+
+  $('file').onchange = function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () { setChannels(parseM3U(r.result)); };
+    r.readAsText(f);
+  };
+
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    var k = e.keyCode;
+    if (k === 38) { step(-1); e.preventDefault(); }
+    else if (k === 40) { step(1); e.preventDefault(); }
+    else if (k === 13) { if (v.paused) { v.play(); } else { v.pause(); } e.preventDefault(); }
+    else if (k === 70) { fullscreen(); }
+    else if (k === 77) { v.muted = !v.muted; }
+  }, false);
+
+  render();
+})();
+</script>
+</body>
+</html>
