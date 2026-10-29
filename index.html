@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Телевиденье МафияГрад</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#10151d; color:#edf2f7; font:16px Arial, Helvetica, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:22px; }
+  header { margin-bottom:18px; }
+  h1 { margin:0 0 6px; font-size:28px; }
+  .sub { color:#aab6c5; font-size:14px; }
+  .panel { background:#1a2330; border:1px solid #2c3949; border-radius:10px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-weight:bold; margin-bottom:8px; }
+  .line { display:flex; gap:8px; }
+  input[type=text] { flex:1; min-width:0; padding:12px; border:1px solid #46566b; border-radius:6px; background:#0f1722; color:#fff; font-size:15px; }
+  button { border:0; border-radius:6px; padding:12px 16px; cursor:pointer; font-weight:bold; background:#2e86de; color:white; }
+  button:hover { background:#2175c8; }
+  button.secondary { background:#3a4657; }
+  .layout { display:flex; gap:16px; }
+  .player { flex: 2; min-width:0; }
+  .channels { flex:1; min-width:240px; }
+  video { display:block; width:100%; background:#000; min-height:260px; max-height:560px; border-radius:7px; }
+  .status { color:#aab6c5; font-size:13px; margin-top:10px; min-height:16px; }
+  .channel-list { max-height:440px; overflow:auto; margin-top:10px; }
+  .channel { display:block; width:100%; text-align:left; margin-bottom:6px; background:#222e3d; padding:11px; font-weight:normal; overflow-wrap:anywhere; }
+  .channel.active { background:#1767a8; }
+  .channel-row { display:flex; gap:6px; margin-bottom:6px; align-items:stretch; }
+  .channel-row .channel { flex:1; min-width:0; margin-bottom:0; }
+  .favorite-toggle { width:42px; min-width:42px; padding:8px; background:#3a4657; font-size:18px; }
+  .favorite-toggle.is-favorite { background:#a87916; color:#fff2b3; }
+  .tabs { display:flex; gap:6px; margin:10px 0; }
+  .tabs button { flex:1; padding:9px 8px; background:#3a4657; }
+  .tabs button.selected { background:#1767a8; }
+  .empty { color:#aab6c5; padding:18px 4px; }
+  .hint { color:#aab6c5; font-size:13px; line-height:1.5; }
+  .footer { color:#8190a2; font-size:12px; padding:4px 0 18px; }
+  @media (max-width:700px) { .wrap{padding:12px} .layout{display:block} .channels{margin-top:14px} .line{display:block} .line button{margin-top:8px;width:100%} video{min-height:210px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Телевиденье МафияГрад</h1>
+    <div class="sub">Простой веб-плеер для M3U / M3U8 плейлистов</div>
+  </header>
+
+  <section class="panel">
+    <label for="playlistUrl">Ссылка на IPTV-плейлист (.m3u / .m3u8)</label>
+    <div class="line">
+      <input id="playlistUrl" type="text" value="https://raw.githubusercontent.com/IPTVRU2026/IPTVMIR/main/IPTV_MEGA_PLAYLIST.m3u" placeholder="https://example.com/playlist.m3u">
+      <button id="loadUrl">Загрузить ссылку</button>
+    </div>
+    <div style="height:12px"></div>
+    <label for="playlistFile">Или выберите файл плейлиста</label>
+    <input id="playlistFile" type="file" accept=".m3u,.m3u8,text/plain" style="max-width:100%">
+    <p class="hint">Для загрузки по ссылке сервер плейлиста должен разрешать запросы с других сайтов (CORS). Используйте только плейлисты, на просмотр которых у вас есть разрешение.</p>
+    <div id="loadStatus" class="status">Ожидание плейлиста.</div>
+  </section>
+
+  <div class="layout">
+    <section class="panel player">
+      <label id="nowPlaying">Выберите канал из списка</label>
+      <video id="video" controls autoplay playsinline></video>
+      <div id="playStatus" class="status">Готово к воспроизведению.</div>
+    </section>
+    <section class="panel channels">
+      <label>Каналы <span id="channelCount">(0)</span></label>
+      <div class="tabs">
+        <button type="button" id="allTab" class="selected">Все каналы</button>
+        <button type="button" id="favoritesTab">★ Избранное</button>
+      </div>
+      <input id="filter" type="text" placeholder="Поиск канала..." style="width:100%">
+      <div id="channelList" class="channel-list"><div class="empty">Сначала загрузите M3U-плейлист.</div></div>
+    </section>
+  </div>
+  <div class="footer">Совместимость интерфейса: старые браузеры, включая Chrome 40. HLS-тест: HLS.js 0.14.17; поддержка видео зависит от кодека и формата потока.</div>
+</div>
+<script src="./hls.min.js"></script>
+<script>
+(function () {
+  var video = document.getElementById('video');
+  var playlistUrl = document.getElementById('playlistUrl');
+  var playlistFile = document.getElementById('playlistFile');
+  var loadStatus = document.getElementById('loadStatus');
+  var playStatus = document.getElementById('playStatus');
+  var channelList = document.getElementById('channelList');
+  var filter = document.getElementById('filter');
+  var nowPlaying = document.getElementById('nowPlaying');
+  var channelCount = document.getElementById('channelCount');
+  var channels = [];
+  var activeIndex = -1;
+  var favorites = {};
+  var showFavorites = false;
+  var favoritesStorageKey = 'mafiagrad_iptv_favorites_v1';
+  var hlsPlayer = null;
+  var pendingHlsIndex = -1;
+
+  try {
+    var savedFavorites = window.localStorage.getItem(favoritesStorageKey);
+    if (savedFavorites) favorites = JSON.parse(savedFavorites) || {};
+  } catch (storageError) {}
+
+  function saveFavorites() {
+    try { window.localStorage.setItem(favoritesStorageKey, JSON.stringify(favorites)); }
+    catch (storageError) {}
+  }
+
+  function favoriteKey(channel) { return channel.url; }
+
+  function toggleFavorite(index) {
+    var key = favoriteKey(channels[index]);
+    if (favorites[key]) delete favorites[key];
+    else favorites[key] = true;
+    saveFavorites();
+    renderChannels();
+  }
+
+  function setLoadStatus(text) { loadStatus.innerHTML = text; }
+  function trim(s) { return (s || '').replace(/^\s+|\s+$/g, ''); }
+
+  function parseM3U(text) {
+    var lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+    var result = [];
+    var pendingName = '';
+    var pendingLogo = '';
+    var pendingGroup = '';
+    var i, line, match, name;
+    for (i = 0; i < lines.length; i++) {
+      line = trim(lines[i]);
+      if (!line) continue;
+      if (line.indexOf('#EXTINF:') === 0) {
+        match = line.match(/tvg-logo="([^"]*)"/i);
+        pendingLogo = match ? match[1] : '';
+        match = line.match(/group-title="([^"]*)"/i);
+        pendingGroup = match ? match[1] : '';
+        name = line.substring(line.lastIndexOf(',') + 1);
+        pendingName = trim(name) || 'Канал ' + (result.length + 1);
+      } else if (line.charAt(0) !== '#') {
+        result.push({ name: pendingName || 'Канал ' + (result.length + 1), url: line, logo: pendingLogo, group: pendingGroup });
+        pendingName = '';
+        pendingLogo = '';
+        pendingGroup = '';
+      }
+    }
+    return result;
+  }
+
+  function renderChannels() {
+    var q = trim(filter.value).toLowerCase();
+    var html = '';
+    var i, c, cls, key, isFav;
+    for (i = 0; i < channels.length; i++) {
+      c = channels[i];
+      key = favoriteKey(c);
+      isFav = !!favorites[key];
+      if (showFavorites && !isFav) continue;
+      if (q && c.name.toLowerCase().indexOf(q) === -1 && (c.group || '').toLowerCase().indexOf(q) === -1) continue;
+      cls = i === activeIndex ? 'channel active' : 'channel';
+      html += '<div class="channel-row">' +
+        '<button type="button" class="' + cls + '" data-index="' + i + '">' +
+        escapeHTML(c.name) + (c.group ? '<br><small>' + escapeHTML(c.group) + '</small>' : '') + '</button>' +
+        '<button type="button" class="favorite-toggle' + (isFav ? ' is-favorite' : '') +
+        '" data-fav-index="' + i + '" title="' + (isFav ? 'Убрать из избранного' : 'Добавить в избранное') +
+        '" aria-label="' + (isFav ? 'Убрать из избранного' : 'Добавить в избранное') + '">' +
+        (isFav ? '★' : '☆') + '</button></div>';
+    }
+    channelCount.innerHTML = '(' + channels.length + ')';
+    channelList.innerHTML = html || '<div class="empty">' +
+      (showFavorites ? 'В избранном пока нет каналов. Нажмите ☆ рядом с каналом.' : 'Каналы не найдены.') +
+      '</div>';
+
+    var buttons = channelList.getElementsByTagName('button');
+    for (i = 0; i < buttons.length; i++) {
+      if (buttons[i].getAttribute('data-index') !== null) {
+        buttons[i].onclick = function () { playChannel(parseInt(this.getAttribute('data-index'), 10)); };
+      } else if (buttons[i].getAttribute('data-fav-index') !== null) {
+        buttons[i].onclick = function () { toggleFavorite(parseInt(this.getAttribute('data-fav-index'), 10)); };
+      }
+    }
+  }
+
+  function escapeHTML(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function usePlaylist(text) {
+    channels = parseM3U(text);
+    activeIndex = -1;
+    renderChannels();
+    if (channels.length) {
+      setLoadStatus('Загружено каналов: ' + channels.length + '. Выберите канал.');
+    } else {
+      setLoadStatus('Каналы не найдены. Проверьте формат M3U.');
+    }
+  }
+
+  function loadFromUrl() {
+    var url = trim(playlistUrl.value);
+    if (!url) { setLoadStatus('Введите ссылку на плейлист.'); return; }
+    setLoadStatus('Загрузка плейлиста...');
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          usePlaylist(xhr.responseText);
+        } else {
+          setLoadStatus('Не удалось загрузить ссылку (HTTP ' + xhr.status + '). Возможно, сервер блокирует CORS.');
+        }
+      }
+    };
+    xhr.onerror = function () { setLoadStatus('Ошибка сети или CORS. Попробуйте открыть M3U-файл локально.'); };
+    try { xhr.send(null); } catch (e) { setLoadStatus('Ошибка загрузки: ' + e.message); }
+  }
+
+  function isHlsUrl(url) {
+    return /\.m3u8(?:$|[?#])/i.test(url) || /[?&](?:type|format)=hls(?:&|$)/i.test(url);
+  }
+
+  function destroyHlsPlayer() {
+    if (hlsPlayer) {
+      try { hlsPlayer.destroy(); } catch (e) {}
+      hlsPlayer = null;
+    }
+  }
+
+  function playDirectUrl(url) {
+    video.src = url;
+    video.load();
+    var promise = video.play();
+    if (promise && promise.catch) {
+      promise.catch(function () {
+        playStatus.innerHTML = 'Поток выбран, но запуск не удался. Нажмите Play или проверьте формат/кодек.';
+      });
+    }
+  }
+
+  function playChannel(index) {
+    if (index < 0 || index >= channels.length) return;
+    activeIndex = index;
+    var c = channels[index];
+    var url = c.url;
+    nowPlaying.innerHTML = escapeHTML(c.name);
+    playStatus.innerHTML = 'Подготовка потока...';
+    renderChannels();
+
+    pendingHlsIndex = -1;
+    video.pause();
+    destroyHlsPlayer();
+    video.removeAttribute('src');
+    video.load();
+
+    if (isHlsUrl(url)) {
+      if (!window.Hls && !window.__hlsLoadFailed) {
+        pendingHlsIndex = index;
+        playStatus.innerHTML = 'Загрузка обработчика HLS.js...';
+        return;
+      }
+
+      if (window.Hls && window.Hls.isSupported()) {
+        try {
+          hlsPlayer = new window.Hls({
+            enableWorker: false,
+            debug: false,
+            maxBufferLength: 20
+          });
+
+          hlsPlayer.on(window.Hls.Events.ERROR, function (event, data) {
+            if (!data || !data.fatal) {
+              if (data && data.details) {
+                playStatus.innerHTML = 'HLS: ' + escapeHTML(data.details);
+              }
+              return;
+            }
+
+            if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+              playStatus.innerHTML = 'Ошибка сети HLS: ' + escapeHTML(data.details || 'не удалось получить сегменты');
+              try { hlsPlayer.startLoad(); } catch (e) {}
+            } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+              playStatus.innerHTML = 'Ошибка декодирования HLS. Попытка восстановления...';
+              try { hlsPlayer.recoverMediaError(); } catch (e) {}
+            } else {
+              playStatus.innerHTML = 'HLS не смог запустить поток: ' + escapeHTML(data.details || data.type || 'неизвестная ошибка');
+              destroyHlsPlayer();
+            }
+          });
+
+          hlsPlayer.on(window.Hls.Events.MEDIA_ATTACHED, function () {
+            if (hlsPlayer) hlsPlayer.loadSource(url);
+          });
+
+          hlsPlayer.on(window.Hls.Events.MANIFEST_PARSED, function () {
+            playStatus.innerHTML = 'Плейлист HLS загружен. Запуск видео...';
+            var promise = video.play();
+            if (promise && promise.catch) {
+              promise.catch(function () {
+                playStatus.innerHTML = 'HLS загружен. Нажмите Play для запуска видео.';
+              });
+            }
+          });
+
+          hlsPlayer.attachMedia(video);
+          playStatus.innerHTML = 'Подключение HLS-потока...';
+        } catch (e) {
+          destroyHlsPlayer();
+          playStatus.innerHTML = 'Не удалось инициализировать HLS.js: ' + escapeHTML(e.message || 'ошибка');
+        }
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        playStatus.innerHTML = 'Используется встроенная поддержка HLS браузера.';
+        playDirectUrl(url);
+      } else {
+        playStatus.innerHTML = 'Этот Chromium не поддерживает HLS.js/MSE. Нужен другой формат потока или поддержка MSE в WebDisplays.';
+      }
+      return;
+    }
+
+    playDirectUrl(url);
+  }
+
+  window.__onHlsLoaded = function () {
+    if (pendingHlsIndex >= 0) {
+      var index = pendingHlsIndex;
+      pendingHlsIndex = -1;
+      playChannel(index);
+    }
+  };
+
+  window.__onHlsLoadFailed = function () {
+    if (pendingHlsIndex >= 0) {
+      var index = pendingHlsIndex;
+      pendingHlsIndex = -1;
+      playStatus.innerHTML = 'Не удалось загрузить HLS.js. Проверьте подключение к CDN или положите настоящую библиотеку hls.js в этот файл.';
+      // Leave the channel selected; user can retry after the library becomes available.
+      activeIndex = index;
+      renderChannels();
+    }
+  };
+
+  video.addEventListener('playing', function () { playStatus.innerHTML = 'Воспроизведение: ' + escapeHTML(channels[activeIndex] ? channels[activeIndex].name : ''); }, false);
+  video.addEventListener('error', function () {
+    if (hlsPlayer) return;
+    var err = video.error;
+    var code = err ? err.code : 0;
+    var detail = code === 2 ? 'сетевая ошибка' : code === 3 ? 'ошибка декодирования/кодека' : code === 4 ? 'формат или источник не поддерживается' : 'неизвестная ошибка';
+    playStatus.innerHTML = 'Не удалось воспроизвести поток (' + detail + ', код ' + code + ').';
+  }, false);
+  filter.onkeyup = renderChannels;
+  document.getElementById('allTab').onclick = function () {
+    showFavorites = false;
+    document.getElementById('allTab').className = 'selected';
+    document.getElementById('favoritesTab').className = '';
+    renderChannels();
+  };
+  document.getElementById('favoritesTab').onclick = function () {
+    showFavorites = true;
+    document.getElementById('allTab').className = '';
+    document.getElementById('favoritesTab').className = 'selected';
+    renderChannels();
+  };
+  document.getElementById('loadUrl').onclick = loadFromUrl;
+  playlistUrl.onkeydown = function (e) { e = e || window.event; if (e.keyCode === 13) loadFromUrl(); };
+  playlistFile.onchange = function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () { usePlaylist(reader.result); };
+    reader.onerror = function () { setLoadStatus('Не удалось прочитать файл.'); };
+    reader.readAsText(file);
+  };
+
+  // Автоматически загружаем заданный плейлист при открытии страницы.
+  loadFromUrl();
+}());
+</script>
+</body>
+</html>
